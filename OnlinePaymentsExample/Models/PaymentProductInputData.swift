@@ -8,27 +8,41 @@ import Foundation
 import OnlinePaymentsKit
 
 class PaymentProductInputData {
-    var paymentItem: PaymentItem!
+    var paymentProduct: PaymentProduct!
     var accountOnFile: AccountOnFile!
     var tokenize = false
     var errors = NSMutableArray()
-    var fieldValues = [String: String]()
+    var fieldValues: [String: String] = [:]
     let formatter = StringFormatter()
-    var paymentRequest = PaymentRequest()
-
+    var paymentRequest: PaymentRequest?
+    
+    init(
+        paymentProduct: PaymentProduct,
+        accountOnFile: AccountOnFile? = nil,
+        tokenize: Bool = false
+    ) {
+        self.paymentProduct = paymentProduct
+        self.accountOnFile = accountOnFile
+        self.tokenize = tokenize
+    }
+    
     func createPaymentRequest() {
-        guard let paymentItem = paymentItem as? PaymentProduct else {
-            fatalError("Invalid paymentItem")
+        let request = PaymentRequest (
+            paymentProduct: paymentProduct,
+            accountOnFile: accountOnFile,
+            tokenize: tokenize)
+        
+        for (fieldId, _) in fieldValues {
+            let value = unmaskedValue(forField: fieldId)
+            
+            do {
+                try request.setValue(id: fieldId, value: value)
+            } catch {
+                
+            }
         }
-
-        paymentRequest =
-            PaymentRequest(paymentProduct: paymentItem, accountOnFile: accountOnFile, tokenize: self.tokenize)
-
-        let keys = Array(fieldValues.keys)
-
-        for key: String in keys {
-            paymentRequest.setValue(forField: key, value: self.unmaskedValue(forField: key))
-        }
+        
+        paymentRequest = request
     }
 
     func setValue(value: String, forField paymentProductFieldId: String) {
@@ -68,38 +82,36 @@ class PaymentProductInputData {
     }
 
     func fieldIsPartOfAccountOnFile(paymentProductFieldId: String) -> Bool {
-        return accountOnFile?.hasValue(forField: paymentProductFieldId) ?? false
+        return accountOnFile?.getValue(id: paymentProductFieldId) != nil
     }
 
     func fieldIsReadOnly(paymentProductFieldId: String) -> Bool {
-        if !fieldIsPartOfAccountOnFile(paymentProductFieldId: paymentProductFieldId) {
+        guard let accountOnFile else {
             return false
-        } else {
-            return accountOnFile.isReadOnly(field: paymentProductFieldId)
         }
+        
+        return !accountOnFile.isWritable(id: paymentProductFieldId)
     }
 
     func mask(forField paymentProductFieldId: String) -> String? {
-        let field = self.paymentItem.paymentProductField(withId: paymentProductFieldId )
-
-        return field?.displayHints.mask
+        return paymentProduct.field(id: paymentProductFieldId)?.displayHints.mask
     }
 
     func validateExcept(fieldNames exceptFieldNames: Set<String>) {
         errors.removeAllObjects()
 
-        let paymentProductFields = paymentItem.fields.paymentProductFields
-        for field in paymentProductFields where !fieldIsPartOfAccountOnFile(paymentProductFieldId: field.identifier) {
-            if self.unmaskedValue(forField: field.identifier) == "" {
-                self.setDefaultValue(for: field)
+        for field in paymentProduct.fields where !fieldIsPartOfAccountOnFile(paymentProductFieldId: field.id) {
+            if unmaskedValue(forField: field.id).isEmpty {
+                setDefaultValue(for: field)
             }
-
-            if exceptFieldNames.contains(field.identifier) {
+            
+            if exceptFieldNames.contains(field.id) {
                 continue
             }
-            let fieldValue = self.unmaskedValue(forField: field.identifier )
-            let errorMessageIds = field.validateValue(value: fieldValue)
-            errors.addObjects(from: errorMessageIds)
+            
+            let fieldValue = unmaskedValue(forField: field.id)
+            let validationErrors = field.validate(value: fieldValue)
+            errors.addObjects(from: validationErrors)
         }
     }
 
@@ -113,13 +125,13 @@ class PaymentProductInputData {
         if field.type == .dateString {
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyyMMdd"
-            setValue(value: formatter.string(from: Date()), forField: field.identifier)
+            setValue(value: formatter.string(from: Date()), forField: field.id)
         }
 
         // It's not possible to choose an empty boolean with a switch
         // If not set, we assume false is chosen
         if field.type == .boolString {
-            setValue(value: "false", forField: field.identifier)
+            setValue(value: "false", forField: field.id)
         }
     }
 }

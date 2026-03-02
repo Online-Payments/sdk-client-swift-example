@@ -8,5 +8,5 @@ import Foundation
 import OnlinePaymentsKit
 
 protocol PaymentProductSelectionTarget {
-    func didSelect(paymentItem: BasicPaymentItem, accountOnFile: AccountOnFile?)
+    func didSelect(paymentProduct: BasicPaymentProduct, accountOnFile: AccountOnFile?)
 }

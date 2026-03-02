@@ -34,25 +34,39 @@ class CardProductViewController: PaymentProductViewController {
         super.updateTextFieldCell(cell: cell, row: row)
 
         // Add card logo for cardNumber field
-        if row.paymentProductField.identifier == "cardNumber" {
-            if confirmedPaymentProducts.contains(paymentItem.identifier) {
-                let productIconSize = 35.2
-                let padding = 4.4
-
-                let outerView =
-                    UIView(frame: CGRect(x: padding, y: padding, width: productIconSize, height: productIconSize))
-                let innerView = UIImageView(frame: CGRect(x: 0, y: 0, width: productIconSize, height: productIconSize))
-                innerView.contentMode = .scaleAspectFit
-                outerView.addSubview(innerView)
-                view.contentMode = .scaleAspectFit
-
-                innerView.image = row.logo
-                cell.rightView = outerView
-            } else {
-                row.logo = nil
-                cell.rightView = UIView()
-            }
+        guard row.paymentProductField.id == "cardNumber" else {
+            return
         }
+        
+        guard let productId = inputData.paymentProduct.id else {
+            row.logo = nil
+            cell.rightView = UIView()
+            
+            return
+        }
+        
+        if confirmedPaymentProducts.contains(productId) {
+            let prorductIconSize: CGFloat = 35.2
+            let padding: CGFloat = 4.4
+            
+            let outerView = UIView(
+                frame: CGRect(x: padding, y: padding, width: prorductIconSize, height: prorductIconSize)
+            )
+            
+            let innerView = UIImageView(
+                frame: CGRect(x: 0, y: 0, width: prorductIconSize, height: prorductIconSize)
+            )
+            
+            innerView.contentMode = .scaleAspectFit
+            innerView.image = row.logo
+            
+            outerView.addSubview(innerView)
+            cell.rightView = outerView
+        } else {
+            row.logo = nil
+            cell.rightView = UIView()
+        }
+        
     }
 
     override func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
@@ -144,7 +158,7 @@ class CardProductViewController: PaymentProductViewController {
         super.tableView(tableView, didSelectRowAt: indexPath)
 
         if let row = formRows[indexPath.row] as? PaymentProductsTableRow,
-           row.paymentProductIdentifier != self.paymentItem.identifier {
+           row.paymentProductIdentifier != self.paymentProduct.id {
             switchToPaymentProduct(paymentProductId: row.paymentProductIdentifier)
             return
         }
@@ -180,10 +194,10 @@ class CardProductViewController: PaymentProductViewController {
             self.initializeFormRows()
             self.addExtraRows()
             let oldCardNumberIndex = oldFormRows.firstIndex(where: { (row) -> Bool in
-                (row as? FormRowTextField)?.paymentProductField.identifier == "cardNumber"
+                (row as? FormRowTextField)?.paymentProductField.id == "cardNumber"
             }) ?? 0
             let newCardNumberIndex = self.formRows.firstIndex(where: { (row) -> Bool in
-                (row as? FormRowTextField)?.paymentProductField.identifier == "cardNumber"
+                (row as? FormRowTextField)?.paymentProductField.id == "cardNumber"
             })  ?? 0
 
             let diffCardNumberIndex = newCardNumberIndex - oldCardNumberIndex
@@ -254,22 +268,21 @@ class CardProductViewController: PaymentProductViewController {
             return
         }
 
-        if row.paymentProductField.identifier == "cardNumber" {
-            let unmasked = inputData.unmaskedValue(forField: row.paymentProductField.identifier)
+        if row.paymentProductField.id == "cardNumber" {
+            let unmasked = inputData.unmaskedValue(forField: row.paymentProductField.id)
             if unmasked.count >= 6, oneOfFirst8DigitsChangedIn(currentEnteredCreditCardNumber: unmasked) {
-                session.iinDetails(
-                    forPartialCreditCardNumber: unmasked,
-                    context: context,
+                sdk.iinDetails(
+                    forPartialCardNumber: unmasked,
+                    paymentContext: context,
                     success: {(_ response: IINDetailsResponse) -> Void in
                         guard
-                          self.inputData.unmaskedValue(forField: row.paymentProductField.identifier).count >= 6 else {
+                          self.inputData.unmaskedValue(forField: row.paymentProductField.id).count >= 6 else {
                             return
                         }
 
                         self.switchToPaymentProduct(response: response)
                     },
                     failure: { _ in },
-                    apiFailure: { _ in }
                 )
             } else if unmasked.count < 6 {
                 self.removeCoBrands()
@@ -284,16 +297,16 @@ class CardProductViewController: PaymentProductViewController {
         if response.status == .supported {
             var coBrandSelected = false
             let coBrands = response.coBrands
-            for cobrand in coBrands where cobrand.paymentProductId == self.paymentItem.identifier {
+            for cobrand in coBrands where cobrand.paymentProductId == self.paymentProduct.id {
                 coBrandSelected = true
             }
             if !coBrandSelected {
                 self.switchToPaymentProduct(paymentProductId: response.paymentProductId)
             } else {
-                self.switchToPaymentProduct(paymentProductId: self.paymentItem.identifier)
+                self.switchToPaymentProduct(paymentProductId: self.paymentProduct.id)
             }
         } else {
-            self.switchToPaymentProduct(paymentProductId: self.initialPaymentProduct?.identifier)
+            self.switchToPaymentProduct(paymentProductId: self.initialPaymentProduct?.id)
         }
     }
 
@@ -329,10 +342,10 @@ class CardProductViewController: PaymentProductViewController {
             // Add row for selection coBrands
             for product in coBrandProducts {
                 let row = PaymentProductsTableRow()
-                row.paymentProductIdentifier = product.identifier
+                row.paymentProductIdentifier = product.id
 
-                row.name = product.displayHints.first?.label
-                row.logo = self.paymentItem.displayHints.first?.logoImage
+                row.name = product.label
+                row.logo = self.paymentProduct.getLogoImage()
 
                 formRows.append(row)
             }
@@ -349,9 +362,9 @@ class CardProductViewController: PaymentProductViewController {
         var coBrandProducts = [PaymentProduct]()
         var count = self.cobrands.filter({$0.allowedInContext}).count
         for coBrand in self.cobrands where coBrand.allowedInContext {
-            session.paymentProduct(
+            sdk.paymentProduct(
                 withId: coBrand.paymentProductId,
-                context: context,
+                paymentContext: context,
                 success: {(_ paymentProduct: PaymentProduct) -> Void in
                     coBrandProducts.append(paymentProduct)
                     count = count - 1
@@ -362,12 +375,8 @@ class CardProductViewController: PaymentProductViewController {
                 },
                 failure: { _ in
                     count = count - 1
-                },
-                apiFailure: { _ in
-                    count = count - 1
                 }
             )
-
         }
         
     }

@@ -11,7 +11,7 @@ import OnlinePaymentsKit
 
 class PaymentProductsViewController: UITableViewController {
 
-    var paymentItems: PaymentItems!
+    let basicPaymentProducts: BasicPaymentProducts
 
     var target: PaymentProductSelectionTarget?
     var amount = 0
@@ -20,53 +20,64 @@ class PaymentProductsViewController: UITableViewController {
     var sections = [PaymentProductsTableSection]()
     var header: SummaryTableHeaderView!
 
-    init(style: UITableView.Style, paymentItems: PaymentItems) {
+    init(style: UITableView.Style, basicPaymentProducts: BasicPaymentProducts) {
+        self.basicPaymentProducts = basicPaymentProducts
         super.init(style: style)
-
-        self.paymentItems = paymentItems
     }
 
     required init?(coder aDecoder: NSCoder) {
-        super.init(coder: aDecoder)
+        fatalError("init has not been implemented")
     }
 
     override func viewDidLoad() {
+        super.viewDidLoad()
+        
         view.backgroundColor = UIColor.white
         navigationItem.titleView = MerchantLogoImageView()
         initializeHeader()
-
-        if paymentItems.hasAccountsOnFile {
-            let accountsSection =
-                TableSectionConverter.paymentProductsTableSectionFromAccounts(
-                    onFile: paymentItems.accountsOnFile,
-                    paymentItems: paymentItems
-                )
-            accountsSection.title =
-                NSLocalizedString(
-                    "AccountsOnFileTitle",
-                    tableName: AppConstants.kAppLocalizable,
-                    bundle: AppConstants.appBundle,
-                    value: "",
-                    comment: "Title of the section that displays stored payment products."
-                )
-            sections.append(accountsSection)
-        }
-        let productsSection = TableSectionConverter.paymentProductsTableSection(from: paymentItems)
-        productsSection.title =
-            NSLocalizedString(
-                "SelectPaymentProductText",
-                tableName: AppConstants.kAppLocalizable,
-                bundle: AppConstants.appBundle,
-                value: "",
-                comment: "Title of the section that shows all available payment products."
-            )
-        sections.append(productsSection)
-
-        // Register reusable views
+        
+        buildSections()
+        
         tableView.register(
             PaymentProductTableViewCell.self,
             forCellReuseIdentifier: PaymentProductTableViewCell.reuseIdentifier
         )
+    }
+    
+    private func buildSections() {
+        sections.removeAll()
+        
+        let accountsOnFile: [AccountOnFile] =
+            basicPaymentProducts.paymentProducts.flatMap { $0.accountsOnFile }
+        
+        if !accountsOnFile.isEmpty {
+            let accountsSection = TableSectionConverter.paymentProductsTableSectionFromAccounts(
+                onFile: accountsOnFile,
+                basicPaymentProducts: basicPaymentProducts
+            )
+            
+            accountsSection.title = NSLocalizedString(
+                "AccountsOnFileTitle",
+                tableName: AppConstants.kAppLocalizable,
+                bundle: AppConstants.appBundle,
+                value: "",
+                comment: "Title for the section that displays stored payment products"
+            )
+            
+            sections.append(accountsSection)
+        }
+        
+        let productsSections = TableSectionConverter.paymentProductsTableSection(from: basicPaymentProducts)
+        productsSections.type = .gcPaymentProductType
+        productsSections.title = NSLocalizedString(
+            "SelectPaymentProductText",
+            tableName: AppConstants.kAppLocalizable,
+            bundle: AppConstants.appBundle,
+            value: "",
+            comment: "Title of the section that shows all available payment products"
+        )
+        
+        sections.append(productsSections)
     }
 
     func initializeHeader() {
@@ -110,44 +121,45 @@ class PaymentProductsViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        let tableSection = sections[section]
-        return tableSection.rows.count
+        return sections[section].rows.count
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String {
-        let tableSection = sections[section]
-        return tableSection.title
+        return sections[section].title
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         guard let cell =
                 tableView.dequeueReusableCell(
-                    withIdentifier: PaymentProductTableViewCell.reuseIdentifier
+                        withIdentifier: PaymentProductTableViewCell.reuseIdentifier
                 ) as? PaymentProductTableViewCell else {
             fatalError("Could not cast cell to PaymentProductTableViewCell")
         }
-
-        let section = sections[indexPath.section]
-        let row = section.rows[indexPath.row]
+        
+        let row = sections[indexPath.section].rows[indexPath.row]
         cell.name = row.name
         cell.logo = row.logo
-
+        
         return cell
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         let section = sections[indexPath.section]
         let row = section.rows[indexPath.row]
-        let paymentItem = paymentItems.paymentItem(withIdentifier: row.paymentProductIdentifier)
-
-        if section.type == .gcAccountOnFileType,
-            let product = paymentItem as? BasicPaymentProduct,
-            let accountOnFile = product.accountOnFile(withIdentifier: row.accountOnFileIdentifier) {
-            target?.didSelect(paymentItem: product, accountOnFile: accountOnFile)
-        } else if let paymentItem = paymentItem {
-            target?.didSelect(paymentItem: paymentItem, accountOnFile: nil)
+        
+        guard let product = basicPaymentProducts.paymentProducts.first(where: { $0.id == row.paymentProductIdentifier}) else {
+            tableView.deselectRow(at: indexPath, animated: true)
+            
+            return
         }
-
+        
+        if section.type == .gcAccountOnFileType {
+            let accountOnFile = product.accountOnFile(withIdentifier: row.accountOnFileIdentifier)
+            target?.didSelect(paymentProduct: product, accountOnFile: accountOnFile)
+        } else {
+            target?.didSelect(paymentProduct: product, accountOnFile: nil)
+        }
+        
         tableView.deselectRow(at: indexPath, animated: true)
     }
 }

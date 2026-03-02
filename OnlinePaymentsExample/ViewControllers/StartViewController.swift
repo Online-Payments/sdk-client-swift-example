@@ -56,7 +56,7 @@ class StartViewController: UIViewController, ContinueShoppingTarget, PaymentFini
 
     var amountValue: Int = 0
 
-    var session: Session?
+    var sdk: OnlinePaymentsSdk?
     var context: PaymentContext?
 
     override func viewDidLoad() {
@@ -779,19 +779,21 @@ class StartViewController: UIViewController, ContinueShoppingTarget, PaymentFini
         // to see the setup you should apply to your own app.
         // ***************************************************************************
 
-        session =
-            Session(
+        do {
+            let sessionData = SessionData(
                 clientSessionId: clientSessionId,
                 customerId: customerId,
-                baseURL: baseURL ?? "",
-                assetBaseURL: assetBaseURL ?? "",
-                appIdentifier: AppConstants.kApplicationIdentifier,
-                loggingEnabled: false
+                clientApiUrl: baseURL ?? "",
+                assetUrl: assetBaseURL ?? ""
             )
-
-        #if DEBUG
-            session?.loggingEnabled = true
-        #endif
+            
+            sdk = try OnlinePaymentsSdk(sessionData: sessionData)
+        } catch {
+            SVProgressHUD.dismiss()
+            self.showPaymentProductsErrorDialog()
+            
+            return
+        }
 
         guard let countryCode = countryCodeTextField.text,
               let currencyCode = currencyCodeTextField.text
@@ -837,7 +839,7 @@ class StartViewController: UIViewController, ContinueShoppingTarget, PaymentFini
         // only illustrates a possible payment product selection screen.
         //
         // ***************************************************************************
-        let amountOfMoney = AmountOfMoney(totalAmount: amountValue, currencyCode: currencyCode)
+        let amountOfMoney = AmountOfMoney(amount: amountValue, currencyCode: currencyCode)
         context = PaymentContext(amountOfMoney: amountOfMoney, isRecurring: isRecurring, countryCode: countryCode)
 
         guard let context = context
@@ -870,16 +872,20 @@ class StartViewController: UIViewController, ContinueShoppingTarget, PaymentFini
             return
         }
 
-        session?.paymentItems(
-            for: context,
-            success: {(_ paymentItems: PaymentItems) -> Void in
+        guard let sdk = sdk else {
+            SVProgressHUD.dismiss()
+            showPaymentProductsErrorDialog()
+            
+            return
+        }
+        
+        sdk.basicPaymentProducts(
+            forContext: context,
+            success: { (basicPaymentProducts: BasicPaymentProducts) -> Void in
                 SVProgressHUD.dismiss()
-                self.showPaymentProductSelection(paymentItems)
+                self.showPaymentProductSelection(basicPaymentProducts)
             },
             failure: { _ in
-                self.showPaymentProductsErrorDialog()
-            },
-            apiFailure: { _ in
                 self.showPaymentProductsErrorDialog()
             }
         )
@@ -911,22 +917,28 @@ class StartViewController: UIViewController, ContinueShoppingTarget, PaymentFini
         self.present(alert, animated: true, completion: nil)
     }
 
-    func showPaymentProductSelection(_ paymentItems: PaymentItems) {
-        if let session = session, let context = context {
-            paymentProductsViewControllerTarget =
-                PaymentProductsViewControllerTarget(
-                    navigationController: navigationController!,
-                    session: session,
-                    context: context
-                )
-            paymentProductsViewControllerTarget!.paymentFinishedTarget = self
-            let paymentProductSelection = PaymentProductsViewController(style: .grouped, paymentItems: paymentItems)
-            paymentProductSelection.target = paymentProductsViewControllerTarget
-            paymentProductSelection.amount = amountValue
-            paymentProductSelection.currencyCode = context.amountOfMoney.currencyCode
-            navigationController!.pushViewController(paymentProductSelection, animated: true)
-            SVProgressHUD.dismiss()
+    func showPaymentProductSelection(_ basicPaymentProducts: BasicPaymentProducts) {
+        guard let context = context, let navigationController = navigationController else {
+            return
         }
+        
+        paymentProductsViewControllerTarget =
+            PaymentProductsViewControllerTarget(
+                navigationController: navigationController,
+                sdk: sdk,
+                context: context
+            )
+                        
+        let paymentProductSelection = PaymentProductsViewController(
+            style: .grouped,
+            basicPaymentProducts: basicPaymentProducts
+        )
+        
+        paymentProductSelection.target = paymentProductsViewControllerTarget
+        paymentProductSelection.amount = amountValue
+        paymentProductSelection.currencyCode = context.amountOfMoney.currencyCode
+        navigationController.pushViewController(paymentProductSelection, animated: true)
+        SVProgressHUD.dismiss()
     }
 
     // MARK: - Continue shopping target

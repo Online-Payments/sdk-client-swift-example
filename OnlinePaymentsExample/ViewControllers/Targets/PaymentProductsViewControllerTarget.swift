@@ -12,21 +12,22 @@ import OnlinePaymentsKit
 import SVProgressHUD
 
 class PaymentProductsViewControllerTarget: NSObject, PKPaymentAuthorizationViewControllerDelegate,
-                                           PaymentProductSelectionTarget, PaymentRequestTarget {
+                                           PaymentProductSelectionTarget, PaymentRequestTarget, ContinueShoppingTarget {
 
-    var session: Session!
+    var sdk: OnlinePaymentsSdk!
     var context: PaymentContext!
     var navigationController: UINavigationController!
 
     var applePayPaymentProduct: PaymentProduct?
     var summaryItems: [PKPaymentSummaryItem] = []
     var authorizationViewController: PKPaymentAuthorizationViewController?
+    var confirmedPaymentProducts = Set<Int>()
 
     var paymentFinishedTarget: PaymentFinishedTarget?
 
-    init(navigationController: UINavigationController, session: Session!, context: PaymentContext!) {
+    init(navigationController: UINavigationController, sdk: OnlinePaymentsSdk!, context: PaymentContext!) {
         self.navigationController = navigationController
-        self.session = session
+        self.sdk = sdk
         self.context = context
     }
 
@@ -42,7 +43,7 @@ class PaymentProductsViewControllerTarget: NSObject, PKPaymentAuthorizationViewC
 
     // MARK: - PaymentProduct selection target
 
-    func didSelect(paymentItem: BasicPaymentItem, accountOnFile: AccountOnFile?) {
+    func didSelect(paymentProduct: BasicPaymentProduct, accountOnFile: AccountOnFile?) {
 
         SVProgressHUD.setDefaultMaskType(SVProgressHUDMaskType.clear)
         let status =
@@ -71,35 +72,50 @@ class PaymentProductsViewControllerTarget: NSObject, PKPaymentAuthorizationViewC
         // website.
         //
         // ***************************************************************************
+        
+        guard let productId = paymentProduct.id else {
+            self.showPaymentProductErrorDialog()
+            return
+        }
+        
+        confirmedPaymentProducts.insert(productId)
 
-        session.paymentProduct(
-            withId: paymentItem.identifier,
-            context: context,
-            success: {(_ paymentProduct: PaymentProduct) -> Void in
-                if paymentItem.identifier.isEqual(AppConstants.kApplePayIdentifier) {
-                    self.showApplePayPaymentItem(paymentProduct: paymentProduct)
-                } else {
+        sdk.paymentProduct(
+            withId: productId,
+            paymentContext: context,
+            success: { ( fullPaymentProduct: PaymentProduct) -> Void in
+                if productId == AppConstants.kApplePayIdentifier {
                     SVProgressHUD.dismiss()
-                    if paymentProduct.fields.paymentProductFields.count > 0 {
-                        self.show(paymentItem: paymentProduct, accountOnFile: accountOnFile)
-                    } else {
-                        let request =
-                            PaymentRequest(
-                                paymentProduct: paymentProduct,
-                                accountOnFile: accountOnFile,
-                                tokenize: false
-                            )
-                        self.didSubmitPaymentRequest(paymentRequest: request)
-                    }
+                    self.showApplePayPaymentItem(paymentProduct: fullPaymentProduct)
+                    
+                    return
+                }
+                
+                SVProgressHUD.dismiss()
+                
+                if !fullPaymentProduct.fields.isEmpty {
+                    self.show(
+                        basicPaymentProduct: paymentProduct,
+                        paymentProduct: fullPaymentProduct,
+                        accountOnFile: accountOnFile)
+                } else {
+                    let request = PaymentRequest(
+                        paymentProduct: fullPaymentProduct,
+                        accountOnFile: accountOnFile,
+                        tokenize: false
+                    )
+                    
+                    self.didSubmitPaymentRequest(paymentRequest: request)
                 }
             },
             failure: { _ in
                 self.showPaymentProductErrorDialog()
-            },
-            apiFailure: { _ in
-                self.showPaymentProductErrorDialog()
             }
         )
+    }
+    
+    func didSelectContinueShopping() {
+        navigationController.popToRootViewController(animated: true)
     }
 
     private func showPaymentProductErrorDialog() {
@@ -127,26 +143,32 @@ class PaymentProductsViewControllerTarget: NSObject, PKPaymentAuthorizationViewC
         self.navigationController.topViewController?.present(alert, animated: true, completion: nil)
     }
 
-    func show(paymentItem: PaymentItem, accountOnFile: AccountOnFile?) {
-        var paymentProductForm: PaymentProductViewController! = nil
-        if (paymentItem as? PaymentProduct)?.paymentMethod == "card" {
+    func show(basicPaymentProduct: BasicPaymentProduct,
+              paymentProduct: PaymentProduct,
+              accountOnFile: AccountOnFile?) {
+        let paymentProductForm: PaymentProductViewController
+        
+        if paymentProduct.paymentMethod == "card" {
             paymentProductForm =
                 CardProductViewController(
-                    paymentItem: paymentItem,
-                    session: session,
+                    basicPaymentProduct: paymentProduct,
+                    paymentProduct: paymentProduct,
+                    sdk: sdk,
                     context: context,
                     accountOnFile: accountOnFile
                 )
         } else {
             paymentProductForm =
                 PaymentProductViewController(
-                    paymentItem: paymentItem,
-                    session: session,
+                    basicPaymentProduct: paymentProduct,
+                    paymentProduct: paymentProduct,
+                    sdk: sdk,
                     context: context,
                     accountOnFile: accountOnFile
                 )
         }
         paymentProductForm.paymentRequestTarget = self
+        paymentProductForm.confirmedPaymentProducts = confirmedPaymentProducts
         navigationController.pushViewController(paymentProductForm, animated: true)
     }
 
@@ -176,17 +198,14 @@ class PaymentProductsViewControllerTarget: NSObject, PKPaymentAuthorizationViewC
             //
             // ***************************************************************************
 
-            session.paymentProductNetworks(
+            sdk.paymentProductNetworks(
                 forProductId: AppConstants.kApplePayIdentifier,
-                context: context,
+                paymentContext: context,
                 success: {(_ paymentProductNetworks: PaymentProductNetworks) -> Void in
                     self.showApplePaySheet(for: paymentProduct, withAvailableNetworks: paymentProductNetworks)
                     SVProgressHUD.dismiss()
                 },
                 failure: { _ in
-                    self.showPaymentProductNetworksErrorDialog()
-                },
-                apiFailure: { _ in
                     self.showPaymentProductNetworksErrorDialog()
                 }
             )
@@ -292,7 +311,7 @@ class PaymentProductsViewControllerTarget: NSObject, PKPaymentAuthorizationViewC
         //
         // ***************************************************************************
 
-        let subtotal = context.amountOfMoney.totalAmount
+        let subtotal = context.amountOfMoney.amount
 
         var summaryItems = [PKPaymentSummaryItem]()
         summaryItems.append(
@@ -317,14 +336,13 @@ class PaymentProductsViewControllerTarget: NSObject, PKPaymentAuthorizationViewC
     // MARK: Payment request target
 
     func didSubmitPaymentRequest(paymentRequest: PaymentRequest) {
-        didSubmitPaymentRequest(paymentRequest, success: nil, failure: nil, apiFailure: nil)
+        didSubmitPaymentRequest(paymentRequest, success: nil, failure: nil)
     }
 
     func didSubmitPaymentRequest(
         _ paymentRequest: PaymentRequest,
         success: (() -> Void)?,
         failure: (() -> Void)?,
-        apiFailure: (() -> Void)?
     ) {
         SVProgressHUD.setDefaultMaskType(.clear)
         let status =
@@ -336,31 +354,24 @@ class PaymentProductsViewControllerTarget: NSObject, PKPaymentAuthorizationViewC
                 comment: ""
             )
         SVProgressHUD.show(withStatus: status)
-
-        self.session.prepare(
-            paymentRequest,
-            success: {(_ preparedPaymentRequest: PreparedPaymentRequest) -> Void in
-                SVProgressHUD.dismiss()
-
-                // ***************************************************************************
-                //
-                // The information contained in `preparedPaymentRequest.encryptedFields` should
-                // be provided via the S2S Create Payment API, using field `encryptedCustomerInput`.
-                //
-                // ***************************************************************************
-                self.paymentFinishedTarget?.didFinishPayment(preparedPaymentRequest.encryptedFields)
+        sdk.encryptPaymentRequest(paymentRequest){ encryptedRequest in
+            SVProgressHUD.dismiss()
+            
+            if let paymentFinishedTarget = self.paymentFinishedTarget {
+                paymentFinishedTarget.didFinishPayment(encryptedRequest.encryptedCustomerInput)
                 success?()
-            }, failure: { _ in
-                self.showSubmitErrorDialog()
-
-                failure?()
-            },
-            apiFailure: { _ in
-                self.showSubmitErrorDialog()
-
-                apiFailure?()
+                
+                return
             }
-        )
+            
+            let endViewController = EndViewController(encryptedCustomerInput: encryptedRequest.encryptedCustomerInput)
+            endViewController.target = self
+            self.navigationController.pushViewController(endViewController, animated: true)
+            success?()
+        } failure: { _ in
+            self.showSubmitErrorDialog()
+            failure?()
+        }
     }
 
     private func showSubmitErrorDialog() {
@@ -418,13 +429,23 @@ class PaymentProductsViewControllerTarget: NSObject, PKPaymentAuthorizationViewC
 
                 let request = PaymentRequest(paymentProduct: applePayPaymentProduct)
 
-                guard let paymentDataString =
-                        String(data: payment.token.paymentData, encoding: String.Encoding.utf8) else {
+                guard let paymentDataString = String(
+                    data: payment.token.paymentData,
+                    encoding: String.Encoding.utf8
+                )else {
                     completion(.failure)
+                    
                     return
                 }
-                request.setValue(forField: "encryptedPaymentData", value: paymentDataString)
-                request.setValue(forField: "transactionId", value: payment.token.transactionIdentifier)
+                
+                do {
+                    try request.setValue(id: "encryptedPaymentData", value: paymentDataString)
+                    try request.setValue(id: "transactionId", value: payment.token.transactionIdentifier)
+                } catch {
+                    completion(.failure)
+
+                    return
+                }
 
                 self.didSubmitPaymentRequest(
                     request,
@@ -432,9 +453,6 @@ class PaymentProductsViewControllerTarget: NSObject, PKPaymentAuthorizationViewC
                         completion(.success)
                     },
                     failure: {
-                        completion(.failure)
-                    },
-                    apiFailure: {
                         completion(.failure)
                     }
                 )

@@ -14,14 +14,15 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
                                     UIPickerViewDelegate, UIPickerViewDataSource,
                                     SwitchTableViewCellDelegate, DatePickerTableViewCellDelegate {
 
-    var paymentItem: PaymentItem!
+    var basicPaymentProduct: BasicPaymentProduct!
+    var paymentProduct: PaymentProduct!
     var context: PaymentContext!
-    var session: Session!
+    var sdk: OnlinePaymentsSdk!
     var amount: Int = 0
 
     var header: SummaryTableHeaderView!
     var inputData: PaymentProductInputData!
-    var confirmedPaymentProducts: Set<String> = []
+    var confirmedPaymentProducts: Set<Int> = []
     var formRows: [FormRow] = []
     var initialPaymentProduct: PaymentProduct?
 
@@ -33,13 +34,21 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
     var accountOnFile: AccountOnFile?
 
     // MARK: - ViewController
-    init(paymentItem: PaymentItem, session: Session, context: PaymentContext, accountOnFile: AccountOnFile?) {
-        super.init(style: .plain)
-        self.paymentItem = paymentItem
-        self.session = session
+    init(
+        basicPaymentProduct: BasicPaymentProduct,
+        paymentProduct: PaymentProduct,
+        sdk: OnlinePaymentsSdk,
+        context: PaymentContext,
+        accountOnFile: AccountOnFile?
+    ) {
+        self.basicPaymentProduct = basicPaymentProduct
+        self.paymentProduct = paymentProduct
+        self.sdk = sdk
         self.context = context
-        self.amount = context.amountOfMoney.totalAmount
+        self.amount = context.amountOfMoney.amount
         self.accountOnFile = accountOnFile
+        
+        super.init(style: .plain)
     }
 
     required init?(coder aDecoder: NSCoder) {
@@ -60,14 +69,17 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
         initializeHeader()
         initializeTapRecognizer()
 
-        inputData = PaymentProductInputData()
-        inputData.accountOnFile = self.accountOnFile
-        inputData.paymentItem = paymentItem
-        if let product = paymentItem as? PaymentProduct {
-            confirmedPaymentProducts.insert(product.identifier)
-            initialPaymentProduct = product
+        inputData = PaymentProductInputData(
+            paymentProduct: paymentProduct,
+            accountOnFile: accountOnFile,
+            tokenize: false
+        )
+        
+        if let productId = paymentProduct.id {
+            confirmedPaymentProducts.insert(productId)
         }
-
+        
+        initialPaymentProduct = paymentProduct
         initializeFormRows()
         addExtraRows()
         registerReuseIdentifiers()
@@ -145,8 +157,9 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
         )
         tableView.tableHeaderView = header
     }
+    
     func addExtraRows() {
-        if let product = paymentItem as? BasicPaymentProduct, product.allowsTokenization && accountOnFile == nil {
+        if basicPaymentProduct.allowsTokenization && accountOnFile == nil {
             // Add remember me switch
             let switchFormRow =
                 FormRowSwitch(
@@ -189,9 +202,10 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
                 comment: "Title of the pay button on the payment product screen."
             )
         let payButtonFormRow = FormRowButton(title: payButtonTitle, target: self, action: #selector(payButtonTapped))
-        payButtonFormRow.isEnabled = paymentItem is PaymentProduct
-        self.formRows.append(payButtonFormRow)
-
+        
+        payButtonFormRow.isEnabled = true
+        formRows.append(payButtonFormRow)
+        
         let cancelButtonTitle =
             NSLocalizedString(
                 "CancelButtonText",
@@ -230,8 +244,7 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
                 updateTextFieldCell(cell: cell, row: row)
             } else if let row = row as? FormRowSwitch {
                 if row.action == #selector(switchChanged) {
-                    if let product = paymentItem as? BasicPaymentProduct,
-                       product.allowsTokenization && accountOnFile == nil {
+                    if basicPaymentProduct.allowsTokenization && accountOnFile == nil {
                         row.isEnabled = true
                     } else {
                         row.isEnabled = false
@@ -244,11 +257,8 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
             } else if let row = row as? FormRowButton,
                       row.action == #selector(payButtonTapped),
                       let cell = tableView.cellForRow(at: IndexPath(row: index, section: 0)) as? ButtonTableViewCell {
-                if paymentItem is PaymentProduct {
-                    row.isEnabled = true
-                } else {
-                    row.isEnabled = false
-                }
+                
+                row.isEnabled = true
                 updateButtonCell(cell: cell, row: row)
             }
         }
@@ -259,28 +269,32 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
         cell.isEnabled = row.isEnabled
     }
 
-    func switchToPaymentProduct(paymentProductId: String?) {
+    func switchToPaymentProduct(paymentProductId: Int?) {
         if let paymentProductId = paymentProductId {
             confirmedPaymentProducts.insert(paymentProductId)
         } else {
-            confirmedPaymentProducts.remove(paymentItem.identifier)
+            if let currentId = paymentProductId {
+                confirmedPaymentProducts.remove(currentId)
+            }
+            
             updateFormRows()
         }
-        if let paymentProductId = paymentProductId, paymentProductId == paymentItem.identifier {
+        if let currentId = paymentProductId, paymentProductId == currentId {
             updateFormRows()
+            
+            return
         } else if let paymentProductId = paymentProductId, !switching {
             switching = true
-            session.paymentProduct(
+            sdk.paymentProduct(
                 withId: paymentProductId,
-                context: context,
-                success: {(_ paymentProduct: PaymentProduct) -> Void in
-                    self.paymentItem = paymentProduct
-                    self.inputData.paymentItem = paymentProduct
+                paymentContext: context,
+                success: {(newProduct: PaymentProduct) -> Void in
+                    self.paymentProduct = newProduct
+                    self.inputData.paymentProduct = newProduct
                     self.updateFormRows()
                     self.switching = false
                 },
                 failure: { _ in },
-                apiFailure: { _ in }
             )
         }
     }
@@ -348,15 +362,11 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
         cell.accessoryType = row.showInfoButton ? .detailButton : .none
         cell.readonly = !row.isEnabled
         cell.field = row.field
-        if let error = row.paymentProductField.errorMessageIds.first {
-            cell.error =
-                FormRowsConverter.errorMessage(
-                    for: error,
-                    withCurrency: row.paymentProductField.displayHints.formElement.type == .currencyType
-                )
-        } else {
-            cell.error = nil
-        }
+
+        let currentValue = row.field.text
+        let errors = row.paymentProductField.validate(value: currentValue)
+        
+        cell.error = errors.first?.errorMessage
     }
 
     func cell(for row: FormRowTextField, tableView: UITableView) -> TextFieldTableViewCell {
@@ -417,8 +427,13 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
         cell.attributedTitle = row.title
         cell.readonly = !row.isEnabled
         cell.accessoryType = row.showInfoButton ? .detailButton : .none
-        if let error = row.field?.errorMessageIds.first, validation {
-            cell.errorMessage = FormRowsConverter.errorMessage(for: error, withCurrency: false)
+        
+        if validation, let field = row.field {
+            let value = row.isOn ? "true" : "false"
+            let errors = field.validate(value: value)
+            cell.errorMessage = errors.first?.errorMessage
+        } else {
+            cell.errorMessage = nil
         }
 
         return cell
@@ -521,9 +536,17 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
             return height
         } else if row is FormRowButton {
             return 52
-        } else if let row = row as? FormRowTextField,
-                    let error = row.paymentProductField.errorMessageIds.first {
-            return self.getTextFieldErrorRowHeight(tableView: tableView, row: row, error: error)
+        } else if let row = row as? FormRowTextField, validation {
+            let value = inputData.unmaskedValue(forField: row.paymentProductField.id)
+            let errors = row.paymentProductField.validate(value: value)
+            
+            if let error = errors.first {
+                return self.getTextFieldErrorRowHeight(
+                    tableView: tableView,
+                    row: row,
+                    error: error.errorMessage
+                )
+            }
         } else if let row = row as? FormRowSwitch {
             return self.getSwitchRowHeight(tableView: tableView, row: row)
         }
@@ -534,20 +557,13 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
     private func getTextFieldErrorRowHeight(
         tableView: UITableView,
         row: FormRowTextField,
-        error: ValidationError
+        error: String
     ) -> CGFloat {
         var width = tableView.bounds.width - 20
         if row.showInfoButton {
             width -= 48
         }
-        let str =
-            NSAttributedString(
-                string:
-                    FormRowsConverter.errorMessage(
-                        for: error,
-                        withCurrency: row.paymentProductField.displayHints.formElement.type == .currencyType
-                    )
-            )
+        let str = NSAttributedString(string: error)
 
         return
             44 + str.boundingRect(
@@ -563,16 +579,20 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
             width -= 48
         }
         var errorHeight: CGFloat = 0
-        if let firstError = row.field?.errorMessageIds.first, validation {
-            let str =
-                NSAttributedString(string: FormRowsConverter.errorMessage(for: firstError, withCurrency: false))
-            errorHeight =
-                str.boundingRect(
-                    with: CGSize.init(width: width, height: CGFloat.infinity),
-                    options: .usesLineFragmentOrigin,
+        if validation, let field = row.field {
+            let value = row.isOn ? "true" : "false"
+            let errors = field.validate(value: value)
+            
+            if let firstError = errors.first {
+                let str = NSAttributedString(string: firstError.errorMessage)
+                errorHeight = str.boundingRect(
+                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin],
                     context: nil
                 ).height + 10
+            }
         }
+        
         return 10 + 44 + 10 + errorHeight
     }
 
@@ -625,9 +645,9 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
         }
 
         let newString = (text as NSString).replacingCharacters(in: range, with: string)
-        inputData.setValue(value: newString, forField: row.paymentProductField.identifier)
+        inputData.setValue(value: newString, forField: row.paymentProductField.id)
         var field = row.field
-        field.text = inputData.maskedValue(forField: row.paymentProductField.identifier)
+        field.text = inputData.maskedValue(forField: row.paymentProductField.id)
         row.field = field
         formRows[indexPath.row] = row
 
@@ -645,7 +665,7 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
         let trimSet = CharacterSet(charactersIn: " /-_")
         let formattedString =
             inputData.maskedValue(
-                forField: row.paymentProductField.identifier,
+                forField: row.paymentProductField.id,
                 cursorPosition: &cursorPosition
             ).trimmingCharacters(in: trimSet)
         row.field.text = formattedString
@@ -691,7 +711,7 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
             updateCurrencyValue(
                 withIntegerString: integerString,
                 fractionalString: fractionalString,
-                paymentProductFieldIdentifier: row.paymentProductField.identifier
+                paymentProductFieldIdentifier: row.paymentProductField.id
             )
         updateRow(withCurrencyValue: newValue, forCell: cell)
 
@@ -730,7 +750,7 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
             updateCurrencyValue(
                 withIntegerString: integerString,
                 fractionalString: fractionalString,
-                paymentProductFieldIdentifier: row.paymentProductField.identifier
+                paymentProductFieldIdentifier: row.paymentProductField.id
             )
         updateRow(withCurrencyValue: newValue, forCell: cell)
 
@@ -808,17 +828,28 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
     @objc func payButtonTapped() {
         var valid = false
         inputData.validate()
+        
         if inputData.errors.count == 0 {
             inputData.createPaymentRequest()
-
-            let paymentRequest = inputData.paymentRequest
-
-            let errorMessageIds = paymentRequest.validate()
-            if errorMessageIds.count == 0 {
-                valid = true
-                paymentRequestTarget?.didSubmitPaymentRequest(paymentRequest: paymentRequest)
+            
+            guard let paymenRequest = inputData.paymentRequest else {
+                validation = true
+                updateFormRows()
+                
+                return
+            }
+            
+            do {
+                let result = try paymenRequest.validate()
+                if result.isValid {
+                    valid = true
+                    paymentRequestTarget?.didSubmitPaymentRequest(paymentRequest: paymenRequest)
+                }
+            } catch {
+                valid = false
             }
         }
+        
         if !valid {
             validation = true
             updateFormRows()
@@ -834,12 +865,8 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
             return
         }
 
-        if let error = field.errorMessageIds.first {
-            cell.errorMessage = FormRowsConverter.errorMessage(for: error, withCurrency: false)
-        } else {
-            cell.errorMessage = nil
-        }
-
+        let value = inputData.unmaskedValue(forField: field.id)
+        let errors = field.validate(value: value)
     }
 
     func datePicker(_ datePicker: UIDatePicker, selectedNewDate date: Date) {
@@ -855,7 +882,7 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
         row.date = date
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd"
-        inputData.setValue(value: formatter.string(from: date), forField: row.paymentProductField.identifier)
+        inputData.setValue(value: formatter.string(from: date), forField: row.paymentProductField.id)
 
     }
 
@@ -873,7 +900,7 @@ class PaymentProductViewController: UITableViewController, UITextFieldDelegate,
         let field = row.field
 
         if let field = field {
-            inputData.setValue(value: sender.isOn ? "true" : "false", forField: field.identifier)
+            inputData.setValue(value: sender.isOn ? "true" : "false", forField: field.id)
             row.isOn = sender.isOn
             if validation {
                 validateData()

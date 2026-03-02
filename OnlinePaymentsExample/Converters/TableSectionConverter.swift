@@ -10,91 +10,68 @@ import OnlinePaymentsKit
 class TableSectionConverter {
     static func paymentProductsTableSectionFromAccounts(
         onFile accountsOnFile: [AccountOnFile],
-        paymentItems: PaymentItems
+        basicPaymentProducts: BasicPaymentProducts
     ) -> PaymentProductsTableSection {
 
         let section = PaymentProductsTableSection()
         section.type = .gcAccountOnFileType
-
-        for accountOnFile in accountsOnFile.sorted(by: { (accountOnFileOne, accountOnFileTwo) -> Bool in
-            let displayOrderA =
-                paymentItems.paymentItem(
-                    withIdentifier: accountOnFileOne.paymentProductIdentifier
-                )?.displayHints.first?.displayOrder ?? Int.max
-            let displayOrderB =
-                paymentItems.paymentItem(
-                    withIdentifier: accountOnFileTwo.paymentProductIdentifier
-                )?.displayHints.first?.displayOrder ?? Int.max
-
+        
+        let sortedAccounts = accountsOnFile.sorted { a, b in
+            let displayOrderA = parentProduct(for: a, in: basicPaymentProducts)?.displayOrder ?? Int.max
+            let displayOrderB = parentProduct(for: b, in: basicPaymentProducts)?.displayOrder ?? Int.max
             return displayOrderA < displayOrderB
-        }) {
-            if let product = paymentItems.paymentItem(withIdentifier: accountOnFile.paymentProductIdentifier) {
-                let row = PaymentProductsTableRow()
-                let displayName = accountOnFile.label
-                row.name = displayName
-                row.accountOnFileIdentifier = accountOnFile.identifier
-                row.paymentProductIdentifier = accountOnFile.paymentProductIdentifier
-                if let displayHints = product.displayHints.first {
-                    row.logo = displayHints.logoImage
-                } else {
-                    row.logo = nil
-                }
-
-                section.rows.append(row)
-            }
         }
 
-        return section
-    }
-
-    static func paymentProductsTableSection(from paymentItems: PaymentItems) -> PaymentProductsTableSection {
-        let section = PaymentProductsTableSection()
-
-        for paymentItem in paymentItems.paymentItems.sorted(by: { (paymentItemOne, paymentItemTwo) -> Bool in
-            if paymentItemOne.displayHints.isEmpty == false && paymentItemTwo.displayHints.isEmpty == false {
-                return paymentItemOne.displayHints[0].displayOrder < paymentItemTwo.displayHints[0].displayOrder
+        for accountOnFile in sortedAccounts {
+            guard let product = parentProduct(for: accountOnFile, in: basicPaymentProducts) else {
+                continue
             }
-
-            return paymentItemOne.identifier < paymentItemTwo.identifier
-        }) {
-            section.type = .gcPaymentProductType
-
+            
             let row = PaymentProductsTableRow()
-            let paymentProductKey = localizationKey(with: paymentItem)
-            let paymentProductValue =
-                NSLocalizedString(
-                    paymentProductKey,
-                    tableName: AppConstants.kAppLocalizable,
-                    bundle: AppConstants.appBundle,
-                    value: "",
-                    comment: ""
-                )
-            row.name = paymentProductValue
-            row.accountOnFileIdentifier = ""
-            row.paymentProductIdentifier = paymentItem.identifier
-            if let displayHints = paymentItem.displayHints.first {
-                row.logo = displayHints.logoImage
-            } else {
-                row.logo = nil
-            }
-
+            row.name = accountOnFile.label
+            row.accountOnFileIdentifier = accountOnFile.id
+            
+            row.paymentProductIdentifier = accountOnFile.paymentProductId
+            row.logo = product.getLogoImage()
+            
             section.rows.append(row)
         }
 
         return section
     }
 
-    static func localizationKey(with paymentItem: BasicPaymentItem) -> String {
-        switch paymentItem {
-        case is BasicPaymentProduct:
-            guard let displayHints = paymentItem.displayHints.first
-            else {
-                return "Display hints not found"
+    static func paymentProductsTableSection(from basicPaymentProducts: BasicPaymentProducts) -> PaymentProductsTableSection {
+        let section = PaymentProductsTableSection()
+        
+        let sortedPaymentProducts = basicPaymentProducts.paymentProducts.sorted { a, b in
+            if a.displayOrder != b.displayOrder {
+                return a.displayOrder < b.displayOrder
             }
+            
+            return (a.id ?? Int.max) < (b.id ?? Int.max)
+        }
+        
+        for product in sortedPaymentProducts {
+            let row = PaymentProductsTableRow()
+            
+            row.name = product.label ?? ""
+            
+            row.accountOnFileIdentifier = ""
+            row.paymentProductIdentifier = product.id ?? 0
+            row.logo = product.getLogoImage()
+            
+            section.rows.append(row)
+        }
 
-            return displayHints.label ?? "No label found"
-        default:
-            return ""
+        return section
+    }
+    
+    private static func parentProduct(
+        for account: AccountOnFile,
+        in basicPaymentProducts: BasicPaymentProducts
+    ) -> BasicPaymentProduct? {
+        return basicPaymentProducts.paymentProducts.first{ product in
+            product.accountsOnFile.contains(where: { $0.id == account.id })
         }
     }
 }

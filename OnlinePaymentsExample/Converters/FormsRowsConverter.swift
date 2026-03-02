@@ -10,21 +10,21 @@ import UIKit
 
 class FormRowsConverter {
 
-    func formRows(from inputData: PaymentProductInputData, confirmedPaymentProducts: Set<String>) -> [FormRow] {
+    func formRows(from inputData: PaymentProductInputData, confirmedPaymentProducts: Set<Int>) -> [FormRow] {
         var rows: [FormRow] = []
-        let paymentProductFields = inputData.paymentItem.fields.paymentProductFields
+        let paymentProductFields = inputData.paymentProduct.fields
 
         for field in paymentProductFields {
-            let isPartOfAccountOnFile = inputData.fieldIsPartOfAccountOnFile(paymentProductFieldId: field.identifier)
+            let isPartOfAccountOnFile = inputData.fieldIsPartOfAccountOnFile(paymentProductFieldId: field.id)
             let value: String
             let isEnabled: Bool
 
             if isPartOfAccountOnFile {
-                let mask = field.displayHints.mask
-                value = inputData.accountOnFile.maskedValue(forField: field.identifier, mask: mask)
-                isEnabled = !inputData.fieldIsReadOnly(paymentProductFieldId: field.identifier)
+                let rawValue = inputData.accountOnFile?.getValue(id: field.id) ?? ""
+                value = field.applyMask(value: rawValue) ?? rawValue
+                isEnabled = !inputData.fieldIsReadOnly(paymentProductFieldId: field.id)
             } else {
-                value = inputData.maskedValue(forField: field.identifier)
+                value = inputData.maskedValue(forField: field.id)
                 isEnabled = true
             }
 
@@ -35,21 +35,20 @@ class FormRowsConverter {
             case .listType:
                 row = listFormRow(from: field, value: value, isEnabled: isEnabled)
             case .textType:
-                row =
-                    textFieldFormRow(
-                        from: field,
-                        paymentItem: inputData.paymentItem,
-                        value: value,
-                        isEnabled: isEnabled,
-                        confirmedPaymentProducts: confirmedPaymentProducts
-                    )
+                row = textFieldFormRow(
+                    from: field,
+                    inputData: inputData,
+                    value: value,
+                    isEnabled: isEnabled,
+                    confirmedPaymentProducts: confirmedPaymentProducts
+                )
             case .currencyType:
                 row = currencyFormRow(from: field, value: value, isEnabled: isEnabled)
             case .dateType:
                 row = dateFormRow(from: field, value: value, isEnabled: isEnabled)
             case .boolType:
                 rows.removeLast()
-                row = switchFormRow(from: field, paymentItem: inputData.paymentItem, value: value, isEnabled: isEnabled)
+                row = switchFormRow(from: field, value: value, isEnabled: isEnabled)
             }
 
             rows.append(row)
@@ -58,94 +57,12 @@ class FormRowsConverter {
         return rows
     }
 
-    static func errorMessage(for error: ValidationError, withCurrency: Bool) -> String {
-        let errorClass = error.self
-        let errorMessageFormat = "ValidationErrors.%@"
-        var errorMessageKey: String
-        var errorMessageValue: String
-        var errorMessage: String
-        if let lengthError = errorClass as? ValidationErrorLength {
-            if lengthError.minLength == lengthError.maxLength {
-                errorMessageKey = String(format: errorMessageFormat, "length.exact")
-            } else if lengthError.minLength == 0 && lengthError.maxLength > 0 {
-                errorMessageKey = String(format: errorMessageFormat, "length.max")
-            } else if lengthError.minLength > 0 && lengthError.maxLength > 0 {
-                errorMessageKey = String(format: errorMessageFormat, "length.between")
-            } else {
-                // this case never happens
-                errorMessageKey = ""
-            }
-
-            let errorMessageValueWithPlaceholders =
-                NSLocalizedString(
-                    errorMessageKey,
-                    tableName: AppConstants.kAppLocalizable,
-                    bundle: AppConstants.appBundle,
-                    value: "",
-                    comment: ""
-                )
-            let errorMessageValueWithPlaceholder =
-                errorMessageValueWithPlaceholders.replacingOccurrences(
-                    of: "{maxLength}",
-                    with: String(lengthError.maxLength)
-                )
-            errorMessage =
-                errorMessageValueWithPlaceholder.replacingOccurrences(
-                    of: "{minLength}",
-                    with: String(lengthError.minLength)
-                )
-        } else if let rangeError = errorClass as? ValidationErrorRange {
-            errorMessageKey = String(format: errorMessageFormat, "length.between")
-            let errorMessageValueWithPlaceholders =
-                NSLocalizedString(
-                    errorMessageKey,
-                    tableName: AppConstants.kAppLocalizable,
-                    bundle: AppConstants.appBundle,
-                    value: "",
-                    comment: ""
-                )
-            var minString = ""
-            var maxString = ""
-            if withCurrency {
-                minString = String(format: "%.2f", Double(rangeError.minValue) / 100)
-                maxString = String(format: "%.2f", Double(rangeError.maxValue) / 100)
-            } else {
-                minString = "\(Int(rangeError.minValue))"
-                maxString = "\(Int(rangeError.maxValue))"
-            }
-            let errorMessageValueWithPlaceholder =
-                errorMessageValueWithPlaceholders.replacingOccurrences(of: "{maxValue}", with: String(maxString))
-            errorMessage =
-                errorMessageValueWithPlaceholder.replacingOccurrences(of: "{minValue}", with: String(minString))
-        } else if !errorClass.errorMessage.isEmpty {
-            errorMessageKey = String(format: errorMessageFormat, errorClass.errorMessage)
-            errorMessageValue =
-                NSLocalizedString(
-                    errorMessageKey,
-                    tableName: AppConstants.kAppLocalizable,
-                    bundle: AppConstants.appBundle,
-                    value: "",
-                    comment: ""
-                )
-            errorMessage = errorMessageValue
-        } else {
-            errorMessage = ""
-            NSException(
-                name: NSExceptionName(rawValue: "Invalid validation error"),
-                reason: "Validation error \(error) is invalid",
-                userInfo: nil
-            ).raise()
-        }
-
-        return errorMessage
-    }
-
     func textFieldFormRow(
         from field: PaymentProductField,
-        paymentItem: PaymentItem,
+        inputData: PaymentProductInputData,
         value: String,
         isEnabled: Bool,
-        confirmedPaymentProducts: Set<String>?
+        confirmedPaymentProducts: Set<Int>?
     ) -> FormRowTextField {
         // Set placeholder for field
         let placeholderValue = field.displayHints.placeholderLabel ?? "No placeholder found"
@@ -175,10 +92,11 @@ class FormRowsConverter {
         let row = FormRowTextField(paymentProductField: field, field: formField)
         row.isEnabled = isEnabled
 
-        if field.identifier == "cardNumber" {
-            if let confirmedPaymentProducts = confirmedPaymentProducts,
-               confirmedPaymentProducts.contains(paymentItem.identifier) {
-                row.logo = paymentItem.displayHints.first?.logoImage ?? nil
+        if field.id == "cardNumber" {
+            if let confirmedPaymentProducts,
+               let productId = inputData.paymentProduct.id,
+               confirmedPaymentProducts.contains(productId) {
+                row.logo = inputData.paymentProduct.getLogoImage()
             } else {
                 row.logo = nil
             }
@@ -237,37 +155,24 @@ class FormRowsConverter {
 
     func switchFormRow(
         from field: PaymentProductField,
-        paymentItem: PaymentItem,
         value: String,
         isEnabled: Bool
     ) -> FormRowSwitch {
+        let descriptionKey = String(format: "PaymentProductField.%@.label", field.id)
 
-        let descriptionKey =
-            String(
-                format: "PaymentProductFields.%@.label",
-                field.identifier
-            )
-        let descriptionValue =
-            NSLocalizedString(
-                descriptionKey,
-                tableName: AppConstants.kAppLocalizable,
-                bundle: AppConstants.appBundle,
-                value: "",
-                comment: ""
-            )
+        let descriptionValue = NSLocalizedString(
+            descriptionKey,
+            tableName: AppConstants.kAppLocalizable,
+            bundle: AppConstants.appBundle,
+            value: "",
+            comment: ""
+        )
         
         let attrString = NSMutableAttributedString(string: descriptionValue)
-
-        let row =
-            FormRowSwitch(
-                title: attrString,
-                isOn: value == "true",
-                target: nil,
-                action: nil,
-                paymentProductField: field
-            )
+        
+        let row = FormRowSwitch(title: attrString, isOn: value == "true", target: nil, action: nil, paymentProductField: field)
+        
         row.isEnabled = isEnabled
-
         return row
     }
 

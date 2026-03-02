@@ -712,7 +712,7 @@
 			repositoryURL = "https://github.com/wl-online-payments-direct/sdk-client-swift";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 4.0.0;
+				minimumVersion = 5.0.1;
 			};
 		};
 		BF7E71492BBE86EC00AEFE22 /* XCRemoteSwiftPackageReference "SVProgressHUD" */ = {

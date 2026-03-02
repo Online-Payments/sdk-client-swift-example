@@ -9,6 +9,6 @@ import UIKit
 class PaymentProductsTableRow: FormRow {
     var name: String!
     var accountOnFileIdentifier: String!
-    var paymentProductIdentifier: String!
+    var paymentProductIdentifier: Int!
     var logo: UIImage!
 }
